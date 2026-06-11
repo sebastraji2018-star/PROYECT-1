@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    restart: always          # Reinicia automáticamente si el proceso crashea
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - TZ=America/Santiago
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
