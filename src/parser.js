@@ -1,10 +1,7 @@
-const Anthropic = require('@anthropic-ai/sdk');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-/**
- * Devuelve la fecha y hora actual en zona America/Santiago en formato legible.
- */
 function getCurrentDatetimeInfo() {
   const now = new Date();
   const options = {
@@ -19,10 +16,6 @@ function getCurrentDatetimeInfo() {
   };
   const readable = new Intl.DateTimeFormat('es-CL', options).format(now);
 
-  // ISO con offset -04:00 (o -03:00 según horario de verano — se calcula automáticamente)
-  const iso = now.toLocaleString('sv-SE', { timeZone: 'America/Santiago' }).replace(' ', 'T');
-  const offsetMs = -new Date().getTimezoneOffset() * 60000;
-  // Calcular offset real en America/Santiago
   const santiagoParts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Santiago',
     hour12: false,
@@ -64,63 +57,54 @@ Reglas:
 - respuesta_usuario siempre en español chileno, informal y amigable, máximo 2 oraciones
 - NUNCA incluyas markdown, bloques de código ni texto fuera del JSON`;
 
-/**
- * Envía el mensaje del usuario a Claude Haiku y retorna el JSON parseado.
- * @param {string} userMessage - Texto enviado por el usuario en WhatsApp
- * @returns {Promise<{accion: string, titulo: string, fecha_inicio: string, fecha_fin: string, respuesta_usuario: string}>}
- */
 async function parseMessage(userMessage) {
   const dt = getCurrentDatetimeInfo();
 
-  const userPrompt = `Fecha y hora actual en Santiago de Chile: ${dt.readable} (${dt.isoWithOffset}, offset ${dt.offset})
+  const fullPrompt = `${SYSTEM_PROMPT}
+
+Fecha y hora actual en Santiago de Chile: ${dt.readable} (${dt.isoWithOffset}, offset ${dt.offset})
 
 Mensaje del usuario: "${userMessage}"`;
 
-  console.log(`[PARSER] Enviando a Claude Haiku. Fecha actual: ${dt.readable}`);
+  console.log(`[PARSER] Enviando a Gemini. Fecha actual: ${dt.readable}`);
 
   let rawResponse;
   try {
-    const response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 512,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userPrompt }],
-    });
-    rawResponse = response.content[0].text.trim();
-    console.log(`[PARSER] Respuesta cruda de Claude: ${rawResponse}`);
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const result = await model.generateContent(fullPrompt);
+    rawResponse = result.response.text().trim();
+    console.log(`[PARSER] Respuesta cruda de Gemini: ${rawResponse}`);
   } catch (err) {
-    console.error('[PARSER] Error llamando a Claude API:', err.message || err);
-    throw new Error('Error en Claude API: ' + (err.message || String(err)));
+    console.error('[PARSER] Error llamando a Gemini API:', err.message || err);
+    throw new Error('Error en Gemini API: ' + (err.message || String(err)));
   }
 
-  // Parseo seguro: extraer JSON aunque Claude incluya texto extra
+  // Limpiar markdown si Gemini lo incluye
+  rawResponse = rawResponse.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+
   let parsed;
   try {
-    // Intento 1: parseo directo
     parsed = JSON.parse(rawResponse);
   } catch {
-    // Intento 2: buscar primer bloque JSON con regex
     const match = rawResponse.match(/\{[\s\S]*\}/);
     if (match) {
       try {
         parsed = JSON.parse(match[0]);
-      } catch (e2) {
-        console.error('[PARSER] No se pudo parsear JSON de Claude:', rawResponse);
-        throw new Error('Claude devolvió JSON inválido');
+      } catch {
+        console.error('[PARSER] No se pudo parsear JSON de Gemini:', rawResponse);
+        throw new Error('Gemini devolvió JSON inválido');
       }
     } else {
-      console.error('[PARSER] Claude no devolvió JSON:', rawResponse);
-      throw new Error('Claude no devolvió JSON');
+      console.error('[PARSER] Gemini no devolvió JSON:', rawResponse);
+      throw new Error('Gemini no devolvió JSON');
     }
   }
 
-  // Validar campos obligatorios
   if (!parsed.accion || !parsed.respuesta_usuario) {
-    console.error('[PARSER] JSON de Claude incompleto:', parsed);
-    throw new Error('JSON de Claude sin campos obligatorios');
+    console.error('[PARSER] JSON de Gemini incompleto:', parsed);
+    throw new Error('JSON de Gemini sin campos obligatorios');
   }
 
-  // Asegurar fecha_fin si falta (default: fecha_inicio + 1 hora)
   if (parsed.accion === 'crear_evento' && parsed.fecha_inicio && !parsed.fecha_fin) {
     const start = new Date(parsed.fecha_inicio);
     const end = new Date(start.getTime() + 60 * 60 * 1000);
